@@ -1,0 +1,44 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "migrate": "node migrations/runMigrations.js",
+    "check": "node checkSetup.js",
+    "check-firebase": "node checkFirebaseSetup.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Backend server for data upload and processing",
+  "dependencies": {
+    "@google-cloud/bigquery": "^7.7.0",
+    "@google-cloud/storage": "^7.7.0",
+    "bull": "^4.12.2",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "csv-parser": "^3.0.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-fileupload": "^1.4.3",
+    "express-rate-limit": "^7.2.0",
+    "firebase-admin": "^11.11.1",
+    "helmet": "^8.1.0",
+    "hpp": "^0.2.3",
+    "jsonwebtoken": "^9.0.2",
+    "node-cache": "^5.1.2",
+    "openai": "^4.86.2",
+    "pg": "^8.13.3",
+    "pg-hstore": "^2.3.4",
+    "sanitize": "^2.1.2",
+    "sequelize": "^6.37.1",
+    "uuid": "^9.0.1",
+    "xlsx": "^0.18.5",
+    "xss-clean": "^0.1.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}

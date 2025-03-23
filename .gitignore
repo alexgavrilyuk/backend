@@ -1,0 +1,9 @@
+# Ignore environment files
+.env
+
+# Ignore API keys or service credentials
+/keys
+
+# Ignore build files
+dist/
+build/
