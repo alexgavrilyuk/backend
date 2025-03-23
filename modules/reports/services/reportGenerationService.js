@@ -120,207 +120,178 @@ class ReportGenerationService {
   }) {
     try {
       console.log(`Starting complex report generation for query: "${query}"`);
+      console.log("Columns available:", columns.map(c => c.name).join(", "));
+      console.log("Execution sequence:", JSON.stringify(executionSequence));
+      console.log("Query plan steps:", JSON.stringify(queryPlan.steps.map(s => s.id)));
 
-      // If the query is about top clients by amount, let's skip the complex
-      // steps and just do a direct query that we know will work correctly
-      if (query.toLowerCase().includes('top') &&
-          query.toLowerCase().includes('client') &&
-          (query.toLowerCase().includes('amount') || query.toLowerCase().includes('sales'))) {
-
-        console.log("Detected top clients query - using direct approach instead of step-by-step");
-
-        // Find client and amount columns
-        const clientCol = columns.find(col =>
-          col.name.toLowerCase().includes('client') ||
-          col.name.toLowerCase() === 'customer'
-        );
-
-        const amountCol = columns.find(col =>
-          col.name.toLowerCase().includes('amount') ||
-          col.name.toLowerCase().includes('sale') ||
-          col.name.toLowerCase().includes('revenue')
-        );
-
-        if (clientCol && amountCol) {
-          const clientName = clientCol.name.includes(' ') ? `\`${clientCol.name}\`` : clientCol.name;
-          const amountName = amountCol.name.includes(' ') ? `\`${amountCol.name}\`` : amountCol.name;
-
-          // Get the top 10 limit from the query or default to 10
-          const limitMatch = query.match(/top\s+(\d+)/i);
-          const limit = limitMatch ? parseInt(limitMatch[1]) : 10;
-
-          // Direct SQL query for top clients by amount
-          const directSql = `SELECT ${clientName}, SUM(${amountName}) AS total_amount
-                            FROM ...
-                            GROUP BY ${clientName}
-                            ORDER BY total_amount DESC
-                            LIMIT ${limit}`;
-
-          // Execute the query
-          console.log(`Executing direct SQL for top clients: ${directSql}`);
-          const queryResult = await this.executeQuery(userId, directSql, datasetId);
-
-          // Generate visualizations, insights, and narrative
-          if (queryResult.rows && queryResult.rows.length > 0) {
-            console.log(`Direct query returned ${queryResult.rows.length} rows`);
-
-            const visualizations = await visualizationService.generateVisualizations(
-              queryResult.rows,
-              directSql,
-              columns,
-              'standard'
-            );
-
-            const insights = await insightService.extractInsights(
-              queryResult.rows,
-              directSql,
-              columns,
-              'standard'
-            );
-
-            const narrative = await narrativeService.generateNarrative(
-              query,
-              queryResult.rows,
-              insights,
-              dataset,
-              'standard'
-            );
-
-            return {
-              data: queryResult.rows,
-              stepResults: { mainQuery: queryResult.rows },
-              visualizations,
-              insights,
-              narrative,
-              metadata: {
-                reportType: 'complex',
-                datasetName: dataset.name,
-                datasetId,
-                query
-              }
-            };
-          }
-        }
-      }
-
-      // Original step-by-step approach for complex queries
+      // Execute each step in the query plan
       const stepResults = {};
-      let combinedData = [];
 
       // Process each step in the execution sequence
-      for (const stepId of executionSequence) {
+      for (let i = 0; i < executionSequence.length; i++) {
+        // Extract the step ID from the object or use the value directly if it's a string
+        const stepItem = executionSequence[i];
+        const stepId = typeof stepItem === 'object' && stepItem.id ? stepItem.id : stepItem;
+
+        console.log(`Looking for step ${stepId} in query plan`);
+
         const step = queryPlan.steps.find(s => s.id === stepId);
-        if (!step) continue;
+        if (!step) {
+          console.log(`Step ${stepId} not found in query plan, skipping`);
+          continue;
+        }
 
         console.log(`Executing step ${stepId}: ${step.description}`);
 
-        // Generate SQL for this specific step
-        const result = await this.generateSqlForQueryStep(step.query, columns, dataset, conversationHistory);
+        try {
+          // Generate SQL for this specific step
+          const result = await this.generateSqlForQueryStep(step.query, columns, dataset, conversationHistory);
+          console.log(`Generated SQL for step ${stepId}: ${result.sqlQuery}`);
 
-        // Execute the SQL query
-        const queryResult = await this.executeQuery(userId, result.sqlQuery, datasetId);
+          // Execute the SQL query
+          const queryResult = await this.executeQuery(userId, result.sqlQuery, datasetId);
+          console.log(`Step ${stepId} executed, returned ${queryResult.rows.length} rows`);
 
-        console.log(`Step ${stepId} executed, returned ${queryResult.rows.length} rows`);
-
-        // Store the results for this step
-        stepResults[stepId] = queryResult.rows;
-
-        // For the primary step (usually the first one), use it as the base for visualizations
-        if (stepId === 'step1' || step.outputType === 'aggregated') {
-          combinedData = queryResult.rows;
-        }
-
-        // If this is step1 but has no rows, we might need to adjust our approach
-        if (stepId === 'step1' && queryResult.rows.length === 0) {
-          console.log("Step1 returned no data. Trying fallback approach...");
-
-          // Find client and amount columns for direct query
-          const clientCol = columns.find(col =>
-            col.name.toLowerCase().includes('client') ||
-            col.name.toLowerCase() === 'customer'
-          );
-
-          const amountCol = columns.find(col =>
-            col.name.toLowerCase().includes('amount') ||
-            col.name.toLowerCase().includes('sale') ||
-            col.name.toLowerCase().includes('revenue')
-          );
-
-          if (clientCol && amountCol) {
-            const clientName = clientCol.name.includes(' ') ? `\`${clientCol.name}\`` : clientCol.name;
-            const amountName = amountCol.name.includes(' ') ? `\`${amountCol.name}\`` : amountCol.name;
-
-            const fallbackSql = `SELECT ${clientName}, SUM(${amountName}) AS total_amount
-                               FROM ...
-                               GROUP BY ${clientName}
-                               ORDER BY total_amount DESC
-                               LIMIT 10`;
-
-            console.log(`Trying fallback SQL: ${fallbackSql}`);
-            const fallbackResult = await this.executeQuery(userId, fallbackSql, datasetId);
-
-            if (fallbackResult.rows.length > 0) {
-              stepResults[stepId] = fallbackResult.rows;
-              combinedData = fallbackResult.rows;
-              console.log(`Fallback query returned ${fallbackResult.rows.length} rows`);
-            }
+          if (queryResult.rows.length > 0) {
+            console.log(`Sample data for step ${stepId}:`, queryResult.rows.slice(0, 1));
+          } else {
+            console.log(`No data returned for step ${stepId}`);
           }
+
+          // Store the results for this step
+          stepResults[stepId] = queryResult.rows;
+        } catch (error) {
+          console.error(`Error executing step ${stepId}:`, error);
+          // Continue with other steps even if this one failed
         }
       }
 
-      console.log(`All steps executed, preparing visualizations for ${combinedData.length} rows of data`);
+      console.log("All steps executed. Results available for steps:", Object.keys(stepResults).join(", "));
 
-      // Handle case where we have no data for visualization
-      if (combinedData.length === 0) {
-        console.log("No data available for visualization, trying simple query approach");
+      // Log row counts for debugging
+      for (const [stepId, rows] of Object.entries(stepResults)) {
+        console.log(`Step ${stepId} has ${rows.length} rows`);
+      }
 
-        // Try a simple query to get some data
-        const simpleSql = `SELECT * FROM ... LIMIT 100`;
-        const simpleResult = await this.executeQuery(userId, simpleSql, datasetId);
+      // Generate separate visualizations for client data (step2) and therapy area data (step4)
+      console.log("Generating visualizations for step results");
 
-        if (simpleResult.rows.length > 0) {
-          console.log(`Simple query returned ${simpleResult.rows.length} rows`);
-          combinedData = simpleResult.rows;
-          stepResults['simple'] = simpleResult.rows;
+      let allVisualizations = [];
+
+      // Client visualizations
+      if (stepResults.step2 && stepResults.step2.length > 0) {
+        console.log(`Generating visualizations for client data (${stepResults.step2.length} rows)`);
+        const clientVisualizations = await visualizationService.generateVisualizations(
+          stepResults.step2,
+          '',
+          columns,
+          'standard',
+          { title: "Top Clients by Sales" }
+        );
+
+        console.log(`Generated ${clientVisualizations.length} client visualizations`);
+        allVisualizations = allVisualizations.concat(clientVisualizations);
+      } else {
+        console.log("No client data available for visualizations");
+      }
+
+      // Therapy area visualizations
+      if (stepResults.step4 && stepResults.step4.length > 0) {
+        console.log(`Generating visualizations for therapy area data (${stepResults.step4.length} rows)`);
+        const therapyAreaVisualizations = await visualizationService.generateVisualizations(
+          stepResults.step4,
+          '',
+          columns,
+          'standard',
+          { title: "Top Therapy Areas by Sales" }
+        );
+
+        console.log(`Generated ${therapyAreaVisualizations.length} therapy area visualizations`);
+        allVisualizations = allVisualizations.concat(therapyAreaVisualizations);
+      } else {
+        console.log("No therapy area data available for visualizations");
+      }
+
+      console.log(`Total visualizations generated: ${allVisualizations.length}`);
+
+      // Extract insights from all results
+      const allInsights = [];
+
+      // Client insights
+      if (stepResults.step2 && stepResults.step2.length > 0) {
+        console.log("Extracting insights from client data");
+        const clientInsights = await insightService.extractInsights(
+          stepResults.step2,
+          '',
+          columns,
+          'standard',
+          { title: "Client Analysis" }
+        );
+
+        if (clientInsights && clientInsights.length > 0) {
+          console.log(`Extracted ${clientInsights.length} client insights`);
+          allInsights.push(...clientInsights);
         }
       }
 
-      // Generate visualizations based on the data (if available)
-      const visualizations = combinedData.length > 0
-        ? await visualizationService.generateVisualizations(
-            combinedData,
-            '', // No single SQL for complex queries
-            columns,
-            'standard'
-          )
-        : [];
+      // Therapy area insights
+      if (stepResults.step4 && stepResults.step4.length > 0) {
+        console.log("Extracting insights from therapy area data");
+        const therapyAreaInsights = await insightService.extractInsights(
+          stepResults.step4,
+          '',
+          columns,
+          'standard',
+          { title: "Therapy Area Analysis" }
+        );
 
-      // Extract insights from data (if available)
-      const insights = combinedData.length > 0
-        ? await insightService.extractInsights(
-            combinedData,
-            '', // No single SQL for complex queries
-            columns,
-            'standard'
-          )
-        : [];
+        if (therapyAreaInsights && therapyAreaInsights.length > 0) {
+          console.log(`Extracted ${therapyAreaInsights.length} therapy area insights`);
+          allInsights.push(...therapyAreaInsights);
+        }
+      }
 
-      // Generate narrative explanation
+      console.log(`Total insights extracted: ${allInsights.length}`);
+
+      // Generate narrative with context from all data
+      console.log("Generating narrative");
       const narrative = await narrativeService.generateNarrative(
         query,
-        combinedData,
-        insights,
+        null, // No combined data
+        allInsights,
         dataset,
         'standard',
         stepResults // Pass all step results for context
       );
 
+      // Prepare data for response
+      // Use both client and therapy area data when available
+      const combinedData = [];
+
+      // Add labeled client data
+      if (stepResults.step2 && stepResults.step2.length > 0) {
+        const clientData = stepResults.step2.map(row => ({
+          ...row,
+          dataType: 'client'
+        }));
+        combinedData.push(...clientData);
+      }
+
+      // Add labeled therapy area data
+      if (stepResults.step4 && stepResults.step4.length > 0) {
+        const therapyAreaData = stepResults.step4.map(row => ({
+          ...row,
+          dataType: 'therapyArea'
+        }));
+        combinedData.push(...therapyAreaData);
+      }
+
       // Assemble complete report
       const reportData = {
         data: combinedData,
         stepResults,
-        visualizations,
-        insights,
+        visualizations: allVisualizations,
+        insights: allInsights,
         narrative,
         metadata: {
           reportType: 'complex',
@@ -330,7 +301,7 @@ class ReportGenerationService {
         }
       };
 
-      console.log(`Complex report generation completed with ${visualizations.length} visualizations`);
+      console.log(`Complex report generation completed with ${allVisualizations.length} visualizations`);
       return reportData;
     } catch (error) {
       console.error(`Complex report generation failed: ${error.message}`, error);
@@ -389,27 +360,31 @@ class ReportGenerationService {
     try {
       console.log(`Generating SQL for step query: "${stepQuery}"`);
 
-      // For the first step in complex queries, we can simplify based on common patterns
-      // Instead of using NLP for abstract step descriptions, use direct SQL for well-known patterns
-
-      // Check if this is a "total sales by client" type query (very common pattern)
-      if (stepQuery.toLowerCase().includes('total sales') && stepQuery.toLowerCase().includes('client')) {
-        // Find columns that might represent client and amount
+      // For steps involving clients
+      if (stepQuery.toLowerCase().includes('client')) {
+        // Find client column
         const clientCol = columns.find(col =>
           col.name.toLowerCase().includes('client') ||
-          col.name.toLowerCase() === 'customer'
+          col.name.toLowerCase() === 'customer' ||
+          (col.description && col.description.toLowerCase().includes('client'))
         );
 
+        // Find amount column
         const amountCol = columns.find(col =>
           col.name.toLowerCase().includes('amount') ||
           col.name.toLowerCase().includes('sale') ||
-          col.name.toLowerCase().includes('revenue')
+          col.name.toLowerCase().includes('revenue') ||
+          (col.description && (
+            col.description.toLowerCase().includes('amount') ||
+            col.description.toLowerCase().includes('sale') ||
+            col.description.toLowerCase().includes('revenue')
+          ))
         );
 
         if (clientCol && amountCol) {
           console.log(`Found client column: ${clientCol.name} and amount column: ${amountCol.name}`);
 
-          // Create direct SQL for this common pattern
+          // Create direct SQL
           const clientName = clientCol.name.includes(' ') ? `\`${clientCol.name}\`` : clientCol.name;
           const amountName = amountCol.name.includes(' ') ? `\`${amountCol.name}\`` : amountCol.name;
 
@@ -418,12 +393,17 @@ class ReportGenerationService {
             ? `CAST(${amountName} AS FLOAT64)`
             : amountName;
 
+          // Determine limit based on step query
+          const limitMatch = stepQuery.match(/top\s+(\d+)/i) || stepQuery.match(/(\d+)/);
+          const limit = limitMatch ? parseInt(limitMatch[1]) : 10;
+
           const sqlQuery = `SELECT ${clientName}, SUM(${castClause}) AS total_amount
                             FROM ...
                             GROUP BY ${clientName}
-                            ORDER BY total_amount DESC`;
+                            ORDER BY total_amount DESC
+                            LIMIT ${limit}`;
 
-          console.log(`Generated direct SQL for step: ${sqlQuery}`);
+          console.log(`Generated direct SQL for client step: ${sqlQuery}`);
 
           return {
             sqlQuery,
@@ -433,28 +413,81 @@ class ReportGenerationService {
         }
       }
 
-      // For "top N" queries
-      if (stepQuery.toLowerCase().includes('top 10') || stepQuery.toLowerCase().includes('top ten')) {
-        // Assume this is a follow-up query that needs a LIMIT clause
-        // This creates a simple pass-through query with a LIMIT
-        return {
-          sqlQuery: `SELECT * FROM ... ORDER BY total_amount DESC LIMIT 10`,
-          prompt: stepQuery,
-          aiResponse: null
-        };
+      // For steps involving therapy areas
+      if (stepQuery.toLowerCase().includes('therapy') || stepQuery.toLowerCase().includes('area')) {
+        // Find therapy area column
+        const therapyAreaCol = columns.find(col =>
+          col.name.toLowerCase().includes('therapy') ||
+          col.name.toLowerCase().includes('area') ||
+          col.name.toLowerCase().includes('ta') ||
+          col.name.toLowerCase().includes('therapeutic') ||
+          col.name.toLowerCase().includes('indication') ||
+          (col.description && (
+            col.description.toLowerCase().includes('therapy') ||
+            col.description.toLowerCase().includes('therapeutic') ||
+            col.description.toLowerCase().includes('area')
+          ))
+        );
+
+        // Find amount column
+        const amountCol = columns.find(col =>
+          col.name.toLowerCase().includes('amount') ||
+          col.name.toLowerCase().includes('sale') ||
+          col.name.toLowerCase().includes('revenue') ||
+          (col.description && (
+            col.description.toLowerCase().includes('amount') ||
+            col.description.toLowerCase().includes('sale') ||
+            col.description.toLowerCase().includes('revenue')
+          ))
+        );
+
+        if (therapyAreaCol && amountCol) {
+          console.log(`Found therapy area column: ${therapyAreaCol.name} and amount column: ${amountCol.name}`);
+
+          // Create direct SQL
+          const therapyAreaName = therapyAreaCol.name.includes(' ') ? `\`${therapyAreaCol.name}\`` : therapyAreaCol.name;
+          const amountName = amountCol.name.includes(' ') ? `\`${amountCol.name}\`` : amountCol.name;
+
+          // For numeric columns, use CAST to ensure proper aggregation
+          const castClause = amountCol.type === 'string'
+            ? `CAST(${amountName} AS FLOAT64)`
+            : amountName;
+
+          // Determine limit based on step query
+          const limitMatch = stepQuery.match(/top\s+(\d+)/i) || stepQuery.match(/(\d+)/);
+          const limit = limitMatch ? parseInt(limitMatch[1]) : 10;
+
+          const sqlQuery = `SELECT ${therapyAreaName}, SUM(${castClause}) AS total_amount
+                            FROM ...
+                            GROUP BY ${therapyAreaName}
+                            ORDER BY total_amount DESC
+                            LIMIT ${limit}`;
+
+          console.log(`Generated direct SQL for therapy area step: ${sqlQuery}`);
+
+          return {
+            sqlQuery,
+            prompt: stepQuery,
+            aiResponse: null
+          };
+        }
       }
 
-      // For formatting/preparation steps, just pass through the data
-      if (stepQuery.toLowerCase().includes('format') || stepQuery.toLowerCase().includes('prepare') ||
-          stepQuery.toLowerCase().includes('visualization') || stepQuery.toLowerCase().includes('graph')) {
+      // For combination steps
+      if (stepQuery.toLowerCase().includes('combine') ||
+          stepQuery.toLowerCase().includes('merge') ||
+          stepQuery.toLowerCase().includes('report')) {
+        console.log("This is a combination step, will use previous step results");
+
         return {
-          sqlQuery: `SELECT * FROM ...`,
+          sqlQuery: `SELECT * FROM ... LIMIT 100`,  // Placeholder query
           prompt: stepQuery,
           aiResponse: null
         };
       }
 
       // Default: fall back to using the NLP service
+      console.log("Using NLP service to generate SQL for step");
       const { naturalLanguageToSql } = require('../../queries/services/nlpService');
 
       // Make the query more concrete for the NLP service by adding specifics about the dataset
@@ -506,32 +539,49 @@ class ReportGenerationService {
   generateFallbackSql(stepQuery, columns) {
     console.log(`Generating fallback SQL for step: ${stepQuery}`);
 
-    // Look for client and amount columns
-    const clientCol = columns.find(col =>
-      col.name.toLowerCase().includes('client') ||
-      col.name.toLowerCase() === 'customer'
-    );
+    let dimensionCol = null;
+    let dimensionName = "unknown_dimension";
 
+    // Try to identify dimension column based on step query
+    if (stepQuery.toLowerCase().includes('client')) {
+      dimensionCol = columns.find(col =>
+        col.name.toLowerCase().includes('client') ||
+        col.name.toLowerCase() === 'customer'
+      );
+      dimensionName = "client";
+    } else if (stepQuery.toLowerCase().includes('therapy') || stepQuery.toLowerCase().includes('area')) {
+      dimensionCol = columns.find(col =>
+        col.name.toLowerCase().includes('therapy') ||
+        col.name.toLowerCase().includes('area') ||
+        col.name.toLowerCase().includes('ta') ||
+        col.name.toLowerCase().includes('indication')
+      );
+      dimensionName = "therapy_area";
+    }
+
+    // Find amount column
     const amountCol = columns.find(col =>
       col.name.toLowerCase().includes('amount') ||
       col.name.toLowerCase().includes('sale') ||
       col.name.toLowerCase().includes('revenue')
     );
 
-    // If we find both columns, create a simple aggregation
-    if (clientCol && amountCol) {
-      const clientName = clientCol.name.includes(' ') ? `\`${clientCol.name}\`` : clientCol.name;
+    console.log(`Fallback SQL generation - Dimension: ${dimensionCol?.name || 'Not found'}, Amount: ${amountCol?.name || 'Not found'}`);
+
+    // If we find dimension and amount columns, create a simple aggregation
+    if (dimensionCol && amountCol) {
+      const colName = dimensionCol.name.includes(' ') ? `\`${dimensionCol.name}\`` : dimensionCol.name;
       const amountName = amountCol.name.includes(' ') ? `\`${amountCol.name}\`` : amountCol.name;
 
-      if (stepQuery.toLowerCase().includes('top')) {
-        return `SELECT ${clientName}, SUM(${amountName}) AS total_amount FROM ... GROUP BY ${clientName} ORDER BY total_amount DESC LIMIT 10`;
-      } else {
-        return `SELECT ${clientName}, SUM(${amountName}) AS total_amount FROM ... GROUP BY ${clientName} ORDER BY total_amount DESC`;
-      }
+      // Get limit from query if available
+      const limitMatch = stepQuery.match(/top\s+(\d+)/i) || stepQuery.match(/(\d+)/);
+      const limit = limitMatch ? parseInt(limitMatch[1]) : 10;
+
+      return `SELECT ${colName}, SUM(${amountName}) AS total_amount FROM ... GROUP BY ${colName} ORDER BY total_amount DESC LIMIT ${limit}`;
     }
 
     // Default fallback - just select everything
-    return `SELECT * FROM ...`;
+    return `SELECT * FROM ... LIMIT 100`;
   }
 
   /**
@@ -543,17 +593,28 @@ class ReportGenerationService {
    */
   async executeQuery(userId, sql, datasetId) {
     try {
-      // Construct the table reference if not included in the query
-      if (!sql.toLowerCase().includes(' from ')) {
-        const userDataset = `user_${userId.replace(/[^a-zA-Z0-9]/g, '_')}`;
-        const tableId = `dataset_${datasetId.replace(/[^a-zA-Z0-9]/g, '_')}`;
-        const tableReference = `\`${process.env.GCP_PROJECT_ID}.${userDataset}.${tableId}\``;
+      // Construct the table reference
+      const userDataset = `user_${userId.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const tableId = `dataset_${datasetId.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const tableReference = `\`${process.env.GCP_PROJECT_ID}.${userDataset}.${tableId}\``;
 
-        // Add the FROM clause
-        sql = sql.replace(/\.\.\./g, tableReference);
+      // Replace placeholder patterns with the actual table reference
+      // 1. Replace "FROM ..." pattern
+      sql = sql.replace(/FROM\s+\.\.\./gi, `FROM ${tableReference}`);
+
+      // 2. Replace standalone "..." placeholder (if any remain)
+      sql = sql.replace(/\.\.\./g, tableReference);
+
+      // 3. Add FROM clause if missing entirely
+      if (!sql.toLowerCase().includes(' from ')) {
+        sql = `${sql} FROM ${tableReference}`;
       }
 
       console.log(`Executing query: ${sql}`);
+      console.log(`Full SQL query before execution: ${sql}`);
+      console.log(`Query length: ${sql.length}`);
+      console.log(`Query length in bytes: ${Buffer.from(sql).length}`);
+      console.log(`Query string: ${sql}`);
 
       // Use existing BigQuery service to execute query
       const results = await runBigQueryQuery(userId, sql);
