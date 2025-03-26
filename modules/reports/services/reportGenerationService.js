@@ -598,26 +598,35 @@ class ReportGenerationService {
       const tableId = `dataset_${datasetId.replace(/[^a-zA-Z0-9]/g, '_')}`;
       const tableReference = `\`${process.env.GCP_PROJECT_ID}.${userDataset}.${tableId}\``;
 
-      // Replace placeholder patterns with the actual table reference
-      // 1. Replace "FROM ..." pattern
-      sql = sql.replace(/FROM\s+\.\.\./gi, `FROM ${tableReference}`);
+      // FIX: Properly insert the FROM clause in the correct position
+      let modifiedSql = '';
 
-      // 2. Replace standalone "..." placeholder (if any remain)
-      sql = sql.replace(/\.\.\./g, tableReference);
+      // Check if SQL already has a FROM clause
+      if (sql.toLowerCase().includes(' from ')) {
+        // Replace any placeholder table references
+        modifiedSql = sql.replace(/FROM\s+\.\.\./gi, `FROM ${tableReference}`);
+        modifiedSql = modifiedSql.replace(/\.\.\./g, tableReference);
+      } else {
+        // Need to insert FROM clause in the correct position
+        // This is the key fix for the "Expected end of input but got keyword FROM" error
 
-      // 3. Add FROM clause if missing entirely
-      if (!sql.toLowerCase().includes(' from ')) {
-        sql = `${sql} FROM ${tableReference}`;
+        // First handle SQL with common clauses
+        const selectPart = sql.split(/\b(WHERE|GROUP BY|ORDER BY|LIMIT|HAVING)\b/i)[0].trim();
+        const remainingParts = sql.substring(selectPart.length);
+
+        // Construct the SQL with FROM in the correct position
+        modifiedSql = `${selectPart} FROM ${tableReference} ${remainingParts}`;
       }
 
-      console.log(`Executing query: ${sql}`);
-      console.log(`Full SQL query before execution: ${sql}`);
-      console.log(`Query length: ${sql.length}`);
-      console.log(`Query length in bytes: ${Buffer.from(sql).length}`);
-      console.log(`Query string: ${sql}`);
+      // Log the query for debugging
+      console.log(`Executing query: ${modifiedSql}`);
+      console.log(`Full SQL query before execution: ${modifiedSql}`);
+      console.log(`Query length: ${modifiedSql.length}`);
+      console.log(`Query length in bytes: ${Buffer.from(modifiedSql).length}`);
+      console.log(`Query string: ${modifiedSql}`);
 
       // Use existing BigQuery service to execute query
-      const results = await runBigQueryQuery(userId, sql);
+      const results = await runBigQueryQuery(userId, modifiedSql);
       console.log(`Query executed successfully, returned ${results.rows.length} rows`);
 
       return results;
